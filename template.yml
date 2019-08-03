@@ -1,31 +1,92 @@
 AWSTemplateFormatVersion: 2010-09-09
 Transform:
 - AWS::Serverless-2016-10-31
+- AWS::CodeStar
 
-Globals:
-  Function:
-    Runtime: nodejs8.10
-    Timeout: 120
-    MemorySize: 512
-    Environment:
-      Variables:
-        NODE_ENV: production
+Parameters:
+  ProjectId:
+    Type: String
+    Description: AWS CodeStar projectID used to associate new resources to team members
+  CodeDeployRole:
+    Type: String
+    Description: IAM role to allow AWS CodeDeploy to manage deployment of AWS Lambda functions
+  Stage:
+    Type: String
+    Description: The name for a project pipeline stage, such as Staging or Prod, for which resources are provisioned and deployed.
+    Default: ''
 
 Resources:
-  FaceSearchApi:
+  HelloWorld:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: # TODO: Add handler
-      CodeUri: # TODO: Add CodeUri
+      Handler: index.handler
+      CodeUri: .   
+      Runtime: nodejs8.10
       Environment:
-        # TODO: Add environment variable for S3
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        # TODO: Add more policies
+        Variables:
+          NODE_ENV: production
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      AutoPublishAlias: live
+      DeploymentPreference:
+        # Type: Linear10PercentEvery1Minute
+        # Type: Canary10Percent10Minutes
+        Type: AllAtOnce
+        Hooks:
+          PreTraffic: !Ref PreTrafficHook
       Events:
-        # TODO: Add events
-  FaceImageBucket:
-    Type: AWS::S3::Bucket
+        GetEvent:
+          Type: Api
+          Properties:
+            Path: /
+            Method: get
+        PostEvent:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+
+  PreTrafficHook:
+    Type: AWS::Serverless::Function
     Properties:
-      # Need to specify bucket name to avoid circular dependency. See https://aws.amazon.com/blogs/infrastructure-and-automation/handling-circular-dependency-errors-in-aws-cloudformation/
-      BucketName: !Sub "face-image-bucket-${AWS::AccountId}"
+      Handler: preTrafficHook.handler
+      CodeUri: .    
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - "codedeploy:PutLifecycleEventHookExecutionStatus"
+            Resource:
+              !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:*/*'
+        - Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - "lambda:InvokeFunction"
+            Resource: !Ref HelloWorld.Version
+      Runtime: nodejs8.10
+      FunctionName: 'CodeDeployHook_preTrafficHook'
+      DeploymentPreference:
+        Enabled: false
+      Environment:
+        Variables:
+          NewVersion: !Ref HelloWorld.Version
+
+  LambdaExecutionRole:
+    Description: Creating service role in IAM for AWS Lambda
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CodeStar-${ProjectId}-Execution${Stage}'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [lambda.amazonaws.com]
+          Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/CodeStar_${ProjectId}_PermissionsBoundary'
